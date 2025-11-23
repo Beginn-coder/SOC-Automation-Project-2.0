@@ -118,7 +118,6 @@ Finally, take a snapshot of the Splunk VM and name it Splunk-installed.
 
 ## 📮 Part 3: Send Windows Telemetry to Splunk
 
-
 ### 1: Install Splunk Universal Forwarder
 1. 	Copy the Splunk Universal Forwarder file from your host to the Windows 10 VM.
 2. 	Run the installer inside the Windows 10 VM.
@@ -249,11 +248,11 @@ We'll set up the webhook in the next part so leave the "Save As Alert" dialog bo
 4. Click View Alert and ensure the status is set to Enabled.
 
 ### 3. Verify Data Reception
-1. Go back to n8n and click on the Listen for test event button. 
+1. Go back to **n8n** and click on the **Listen for test event** button. 
 
 **Note**: you may need to wait for a minute
 
-Once the screen is updated, showing "Workflow executed", you can Expand the JSON or Body section in the Output Data. You should see the telemetry fields we configured in Splunk:
+Once the screen is updated, showing **"Workflow executed"**, you can Expand the JSON or Body section in the Output Data. You should see the telemetry fields we configured in Splunk:
 
 - _time
 - ComputerName
@@ -262,3 +261,146 @@ Once the screen is updated, showing "Workflow executed", you can Expand the JSON
 - count
 
 ## 🧠 Part 7: Integrate OpenAI (ChatGPT)
+
+### 1. Disable Splunk Alert (Temporarily)
+1. Go to **Splunk > Searches, reports, and alerts** and find test-brute-force and click Edit > Disable. We don't want the alert firing every minute while we build the workflow
+2. Go to n8n, check the execution history, open the last successful test, and click Pin Data on the Webhook node. This allows you to build the rest of the flow without needing to re-trigger Splunk constantly.
+
+### 2. Add OpenAI Node
+1. In n8n, click the + button and search for OpenAI.
+2. Select Message a model.
+3. Credential Setup:
+    - Go to [platform.openai.com](https://platform.openai.com/docs/overview)
+    - Sign up/Log in and go to API Keys.
+    - Create a new key.
+    - In n8n, create a new credential and paste the key.
+  
+**Note**: You must have a small amount of credit (min $5) in your OpenAI billing settings for the API to work.
+
+ 4. Configuration:
+     - Model: gpt-4o-mini (or your preferred model).
+     - Messages:
+       - Message 1 (Role: System): Format the output clearly. Return findings in a structured format such as: Summary, IOC Enrichment, Severity Assessment, and Recommended Actions.
+       - Message 2 (Role: Assistant): Act as a Tier 1 SOC Analyst assistant. When provided with a security alert or incident details (including indicators of compromise, logs, or metadata), perform the                                                following steps:
+                                                      1. Summarize the alert.
+                                                      2. Enrich with threat intelligence.
+                                                      3. Assess the severity based on MITRE ATT&CK.
+                                                      4. Recommend next actions.
+       - Message 3 (Role: User):
+          
+          - Drag the **Search Name** from the Webhook output into this field.
+          - We also need the raw result details. Because the fields might change based on the alert type, use an expression to stringify the JSON.
+          - Add the following expression to the user message: Alert Details: {{ JSON.stringify($json.result, null, 2) }}
+
+5. Connect the Webhook node to the OpenAI node.
+
+<img width="614" height="741" alt="image" src="https://github.com/user-attachments/assets/3113dc8f-4b1b-403f-b4c9-ccdf5848524a" />
+
+<img width="594" height="481" alt="image" src="https://github.com/user-attachments/assets/972eceb8-a5f7-491e-abe3-2f612fff0b1c" />
+
+
+
+
+## 💬 Part 8: Integrate Slack
+
+### 1. Create Slack App
+1. Go to [api.slack.com/apps](api.slack.com/apps) and sign in or create an account if you haven't already.
+2. Click **Create New App > From Scratch**.
+
+   - Name: mydfir-soc-bot
+   - Workspace: Select your workspace.
+3. **Permissions**:
+
+   - Go to OAuth & Permissions (left sidebar).
+   - Scroll to Scopes > Bot Token Scopes.
+   - Add the following scopes:
+      - chat:write
+      - channels:read
+      - files:write (optional)
+4. **Install App**:
+
+   - Scroll up to OAuth Tokens for Your Workspace and click Install to Workspace.
+   - Copy the Bot User OAuth Token (starts with xoxb-).
+
+### 2. Configure Slack Channel
+1. Open Slack and create a public channel named #alerts.
+2. **CRITICAL STEP**: You must add the bot to the channel.
+
+   - Go to the #alerts channel.
+   - Type /invite @mydfir-soc-bot (or whatever you named your app) OR click the channel name > Integrations > Add an App.
+
+### 3. Add Slack Node in n8n
+1. In n8n, click **+** and search for **Slack**.
+2. Select **Post a message**.
+3. **Credentials**: Create a new credential using the xoxb- token you copied earlier.
+4. **Configuration**:
+
+   - Resource: Message
+   - Operation: Post
+   - Channel: Select From List > #alerts.
+   - Text: Click the Expression (gears) icon. Drag the content field from the OpenAI node's output into this box.
+
+5. Connect the OpenAI node to the Slack node.
+
+<img width="1139" height="865" alt="image" src="https://github.com/user-attachments/assets/b36e9887-9bf7-444d-9a82-b043394dd6ad" />
+<img width="1059" height="552" alt="image" src="https://github.com/user-attachments/assets/4c60257b-2d89-48c8-86e4-fa3b7e59a9c0" />
+
+## 🌍 Part 9: Threat Intelligence Enrichment (AbuseIPDB)
+
+### 1. Setup AbuseIPDB
+1. Go to [AbuseIPDB](https://www.abuseipdb.com/) and create a free account.
+2. Go to **API > Create Key**. Copy the key.
+
+### 2. Add "Tool" to OpenAI Node
+1. Open your **OpenAI** node in n8n.
+2. Scroll down to **Tools** (or "Use Tools").
+3. Click **+** and select **HTTP Request**.
+4. **Rename the Tool**: Change the name to abuseipdb-enrichment.
+
+### 3. Configure the HTTP Request
+1. **Method**: GET
+2. **URL**: https://api.abuseipdb.com/api/v2/check
+3. **Authentication**: Header Auth.
+
+   - **Header Name**: Key
+   - **Value**: Paste your AbuseIPDB API Key.
+4. **Query Parameters**:
+
+   - **Name**: ipAddress
+   - **Value**: Click the settings icon next to value and select Define below. Leave it blank/auto so the AI can inject the IP it finds in the logs.
+   - **Name**: maxAgeInDays
+   - **Value**: 1 (This limits the data returned to save tokens).
+
+<img width="702" height="751" alt="image" src="https://github.com/user-attachments/assets/e05c8424-2b09-4779-8838-01f85a2b57c9" />
+
+
+### 4. Update Prompts for Enrichment
+1. Go back to the **OpenAI Node > Assistant Message**.
+2. Update the prompt to explicitly instruct the AI to use the tool: Enrich with threat intelligence. For any public IP addresses found, use the tool 'abuseipdb-enrichment' to check their reputation.
+3. **Simulate External Attack**: Since your lab logs only show internal IPs (e.g., 192.168.x.x), the AI won't check them. To test this, modify the **User Message** (Role: User) to hardcode a known bad IP for testing: Alert Details: {{ JSON.stringify($json.result, null, 2) }}, Additional Context: The source IP 80.94.95.223 (Romania) was observed in related logs.
+
+<img width="494" height="718" alt="image" src="https://github.com/user-attachments/assets/01fdd069-8352-4557-8c87-e9a611a7f1b3" />
+
+
+### 5. Final Test
+1. Click **Execute Workflow**.
+2. **Result**:
+
+   - The OpenAI node should call the AbuseIPDB tool.
+   - It should receive the JSON data that the IP has a "Confidence Score" of 100.
+   - It should formulate a response summarizing the attack and the high-risk IP.
+   - The formatted message should appear in your Slack #alerts channel.
+
+### ✅ Lab Complete
+You have successfully built a SOAR pipeline.
+
+1. Splunk detects the brute force.
+
+2. n8n receives the webhook.
+
+3. OpenAI analyzes the logs and queries AbuseIPDB.
+
+4. Slack receives a graded incident report.
+
+<img width="887" height="448" alt="image" src="https://github.com/user-attachments/assets/ec76c312-a7dc-4d4c-80bd-b61079625203" />
+<img width="1051" height="539" alt="image" src="https://github.com/user-attachments/assets/fbfcbb0d-7616-45ed-8e18-636e1cd3fc10" />
